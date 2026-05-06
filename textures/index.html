@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Seed AR - Geolocation Viewer</title>
+<style>
+  :root {
+    --gold: #c8a060;
+    --cream: #f0e8da;
+    --dark: #0d0b09;
+    --muted: #9a8870;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--dark);
+    color: var(--cream);
+    font-family: 'Raleway', sans-serif;
+    height: 100dvh;
+    width: 100vw;
+    overflow: hidden;
+  }
+
+  #viewer-wrap {
+    position: relative;
+    width: 100vw;
+    height: 100dvh;
+  }
+
+  #video-bg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    z-index: 0;
+  }
+
+  #three-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+  }
+
+  #control-panel {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    background: linear-gradient(to top, rgba(13,11,9,0.95), rgba(13,11,9,0.8));
+    padding: 20px;
+    max-height: 50vh;
+    overflow-y: auto;
+    border-top: 1px solid rgba(200,160,96,0.3);
+  }
+
+  .panel-section { margin-bottom: 16px; }
+  .panel-title {
+    font-size: 11px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--gold);
+    margin-bottom: 10px;
+    font-weight: bold;
+  }
+
+  .control-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .control-label { font-size: 11px; min-width: 100px; color: var(--muted); }
+  .control-input { flex: 1; height: 4px; background: rgba(200,160,96,0.2); border-radius: 2px; appearance: none; cursor: pointer; }
+  .control-input::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; background: var(--gold); border-radius: 50%; cursor: pointer; box-shadow: 0 0 8px rgba(200,160,96,0.5); }
+  .control-value { font-size: 11px; min-width: 40px; text-align: right; color: var(--gold); font-weight: bold; }
+
+  .color-picker-container { display: flex; gap: 8px; flex-wrap: wrap; }
+  .color-swatch { width: 32px; height: 32px; border-radius: 4px; cursor: pointer; border: 2px solid transparent; transition: border-color 0.2s; }
+  .color-swatch.active { border-color: var(--gold); box-shadow: 0 0 8px rgba(200,160,96,0.5); }
+
+  input[type="color"] { width: 50px; height: 32px; border: 1px solid rgba(200,160,96,0.3); cursor: pointer; }
+
+  .button-group { display: flex; gap: 8px; }
+  button {
+    flex: 1;
+    padding: 10px;
+    background: rgba(200,160,96,0.15);
+    border: 1px solid rgba(200,160,96,0.4);
+    color: var(--gold);
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.2s;
+  }
+
+  .toggle-btn {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    z-index: 11;
+    padding: 10px 16px;
+    background: rgba(13,11,9,0.7);
+    border: 1px solid rgba(200,160,96,0.4);
+    color: var(--gold);
+    font-size: 10px;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+
+  .info-badge {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    z-index: 11;
+    background: rgba(13,11,9,0.7);
+    border: 1px solid rgba(200,160,96,0.4);
+    color: var(--cream);
+    font-size: 9px;
+    padding: 8px 12px;
+    border-radius: 4px;
+    max-width: 200px;
+  }
+
+  .info-badge.error {
+    border-color: rgba(255,100,100,0.5);
+    color: #ff9999;
+  }
+
+  #loading {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(13,11,9,0.9);
+  }
+
+  .spinner {
+    width: 40px;
+    height: 40px;
+    border: 2px solid rgba(200,160,96,0.2);
+    border-top-color: var(--gold);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div id="viewer-wrap">
+  <video id="video-bg" autoplay playsinline muted></video>
+  <canvas id="three-canvas"></canvas>
+
+  <div id="info-badge" class="info-badge">
+    <div>🌍 Initializing...</div>
+  </div>
+
+  <button id="toggle-panel" class="toggle-btn">⚙ Settings</button>
+
+  <div id="control-panel" style="display:none;">
+    <div class="panel-section">
+      <div class="panel-title">Location Mode</div>
+      <div class="button-group">
+        <button onclick="setLocationMode('gps')">Use GPS</button>
+        <button onclick="setLocationMode('hardcoded')">Test Location</button>
+      </div>
+      <div style="font-size: 9px; color: var(--muted); margin-top: 8px;">
+        Mode: <span id="location-mode-display">GPS</span>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-title">Appearance</div>
+      <div class="control-group">
+        <label class="control-label">Transparency</label>
+        <input type="range" id="opacity-slider" class="control-input" min="0" max="100" value="100" oninput="updateSettings()">
+        <span class="control-value" id="opacity-value">100%</span>
+      </div>
+
+      <div class="control-group">
+        <label class="control-label">Scale</label>
+        <input type="range" id="scale-slider" class="control-input" min="0.5" max="10" step="0.5" value="4" oninput="updateSettings()">
+        <span class="control-value" id="scale-value">4.0x</span>
+      </div>
+
+      <div style="margin-bottom: 12px;">
+        <div style="font-size: 9px; color: var(--muted); margin-bottom: 8px;">Tint Color</div>
+        <div class="color-picker-container" id="color-swatches"></div>
+        <div style="margin-top: 8px; display: flex; gap: 8px;">
+          <label style="font-size: 9px; color: var(--muted); display: flex; align-items: center; gap: 6px;">
+            Custom:
+            <input type="color" id="custom-color" value="#ffffff" oninput="updateSettings()">
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="panel-title">Position</div>
+      <div class="control-group">
+        <label class="control-label">Height (m)</label>
+        <input type="range" id="height-slider" class="control-input" min="10" max="500" step="10" value="100" oninput="updateSettings()">
+        <span class="control-value" id="height-value">100m</span>
+      </div>
+
+      <div class="control-group">
+        <label class="control-label">Distance (m)</label>
+        <input type="range" id="distance-slider" class="control-input" min="-200" max="200" step="10" value="0" oninput="updateSettings()">
+        <span class="control-value" id="distance-value">0m</span>
+      </div>
+
+      <div class="control-group">
+        <label class="control-label">Lateral (m)</label>
+        <input type="range" id="lateral-slider" class="control-input" min="-200" max="200" step="10" value="0" oninput="updateSettings()">
+        <span class="control-value" id="lateral-value">0m</span>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="button-group">
+        <button onclick="resetSettings()">Reset</button>
+        <button onclick="downloadSettings()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="loading">
+    <div class="spinner"></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/DRACOLoader.js"></script>
+
+<script>
+let scene, camera, renderer, model;
+let clock = new THREE.Clock();
+
+let userLocation = { lat: 0, lon: 0 };
+let locationMode = 'gps';
+const HARDCODED_LOCATION = { lat: 59.3293, lon: 18.0686 };
+
+let alpha = 0, beta = 0, gamma = 0;
+
+let settings = {
+  opacity: 100,
+  scale: 4.0,
+  colorTint: '#ffffff',
+  heightOffset: 100,
+  distanceOffset: 0,
+  lateralOffset: 0
+};
+
+const colorPresets = [
+  { name: 'White', color: '#ffffff' },
+  { name: 'Gold', color: '#c8a060' },
+  { name: 'Red', color: '#ff6b6b' },
+  { name: 'Blue', color: '#4a9eff' },
+  { name: 'Green', color: '#51cf66' },
+  { name: 'Purple', color: '#b197fc' }
+];
+
+async function init() {
+  loadSettings();
+  initThree();
+  await requestPermissions();
+  setupControlPanel();
+  setTimeout(() => {
+    document.getElementById('loading').style.display = 'none';
+  }, 1000);
+}
+
+async function requestPermissions() {
+  const badge = document.getElementById('info-badge');
+
+  if (navigator.geolocation) {
+    navigator.geolocation.watchPosition(
+      (pos) => {
+        userLocation.lat = pos.coords.latitude;
+        userLocation.lon = pos.coords.longitude;
+        updateInfoBadge();
+      },
+      (err) => {
+        console.warn('Geolocation error:', err);
+        updateInfoBadge('Location unavailable');
+      }
+    );
+  }
+
+  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try {
+      const perm = await DeviceOrientationEvent.requestPermission();
+      if (perm === 'granted') {
+        window.addEventListener('deviceorientation', onDeviceOrientation);
+      }
+    } catch (err) {
+      console.log('DeviceOrientation permission denied, using fallback');
+      window.addEventListener('deviceorientation', onDeviceOrientation);
+    }
+  } else {
+    window.addEventListener('deviceorientation', onDeviceOrientation);
+  }
+
+  updateInfoBadge();
+}
+
+function onDeviceOrientation(event) {
+  alpha = event.alpha || 0;
+  beta = event.beta || 0;
+  gamma = event.gamma || 0;
+}
+
+function initThree() {
+  const canvas = document.getElementById('three-canvas');
+
+  scene = new THREE.Scene();
+  scene.background = null;
+
+  camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.01, 10000);
+  camera.position.set(0, -3, 0);
+
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: 'high-performance' });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.2;
+  renderer.setClearColor(0x000000, 0);
+
+  const hemi = new THREE.HemisphereLight(0xfff4e0, 0x1a1410, 1.2);
+  scene.add(hemi);
+
+  const key = new THREE.DirectionalLight(0xffeedd, 3);
+  key.position.set(5, 10, 5);
+  scene.add(key);
+
+  const fill = new THREE.PointLight(0x8090ff, 1.5, 100);
+  fill.position.set(-5, 5, 5);
+  scene.add(fill);
+
+  loadModel();
+  startCamera();
+  animate();
+
+  window.addEventListener('resize', onWindowResize);
+}
+
+async function startCamera() {
+  try {
+    const constraints = {
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+      },
+      audio: false
+    };
+
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    const video = document.getElementById('video-bg');
+    video.srcObject = stream;
+    
+    video.onloadedmetadata = () => {
+      video.play().catch(e => console.error('Video play failed:', e));
+    };
+  } catch (err) {
+    console.error('Camera error:', err);
+    updateInfoBadge('Camera access denied', true);
+    alert('Camera access needed. Please enable camera permissions in browser settings.');
+  }
+}
+
+function loadModel() {
+  const loader = new THREE.GLTFLoader();
+
+  try {
+    const draco = new THREE.DRACOLoader();
+    draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/libs/draco/');
+    loader.setDRACOLoader(draco);
+  } catch (e) {}
+
+  loader.load(
+    'model.glb',
+    (gltf) => {
+      model = gltf.scene;
+
+      const box = new THREE.Box3().setFromObject(model);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const scale = 2.0 / maxDim;
+
+      model.scale.setScalar(scale);
+      model.position.sub(center.multiplyScalar(scale));
+
+      model.traverse((child) => {
+        if (child.isMesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+        }
+      });
+
+      scene.add(model);
+      updateSettings();
+    },
+    undefined,
+    (err) => {
+      console.error('Model load error:', err);
+      updateInfoBadge('Model not found', true);
+    }
+  );
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  if (model) {
+    const toRad = Math.PI / 180;
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = -alpha * toRad;
+    camera.rotation.x = beta * toRad;
+    camera.rotation.z = -gamma * toRad;
+
+    const heightM = parseFloat(settings.heightOffset) || 100;
+    const distanceM = parseFloat(settings.distanceOffset) || 0;
+    const lateralM = parseFloat(settings.lateralOffset) || 0;
+
+    const scale = heightM / 100;
+    model.position.y = heightM * 0.01;
+    model.position.z = -distanceM * 0.01;
+    model.position.x = lateralM * 0.01;
+
+    model.rotation.y += 0.001;
+  }
+
+  renderer.render(scene, camera);
+}
+
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function setupControlPanel() {
+  const container = document.getElementById('color-swatches');
+  colorPresets.forEach(preset => {
+    const swatch = document.createElement('div');
+    swatch.className = 'color-swatch';
+    swatch.style.backgroundColor = preset.color;
+    if (preset.color === settings.colorTint) swatch.classList.add('active');
+    swatch.title = preset.name;
+    swatch.onclick = () => {
+      document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
+      swatch.classList.add('active');
+      settings.colorTint = preset.color;
+      updateSettings();
+    };
+    container.appendChild(swatch);
+  });
+
+  document.getElementById('opacity-slider').value = settings.opacity;
+  document.getElementById('scale-slider').value = settings.scale;
+  document.getElementById('height-slider').value = settings.heightOffset;
+  document.getElementById('distance-slider').value = settings.distanceOffset;
+  document.getElementById('lateral-slider').value = settings.lateralOffset;
+  document.getElementById('custom-color').value = settings.colorTint;
+
+  updateSettings();
+}
+
+function updateSettings() {
+  settings.opacity = parseFloat(document.getElementById('opacity-slider').value);
+  settings.scale = parseFloat(document.getElementById('scale-slider').value);
+  settings.heightOffset = parseFloat(document.getElementById('height-slider').value);
+  settings.distanceOffset = parseFloat(document.getElementById('distance-slider').value);
+  settings.lateralOffset = parseFloat(document.getElementById('lateral-slider').value);
+  settings.colorTint = document.getElementById('custom-color').value;
+
+  document.getElementById('opacity-value').textContent = settings.opacity + '%';
+  document.getElementById('scale-value').textContent = settings.scale.toFixed(1) + 'x';
+  document.getElementById('height-value').textContent = settings.heightOffset + 'm';
+  document.getElementById('distance-value').textContent = settings.distanceOffset + 'm';
+  document.getElementById('lateral-value').textContent = settings.lateralOffset + 'm';
+
+  if (model) {
+    model.scale.setScalar(settings.scale);
+    model.traverse((child) => {
+      if (child.isMesh && child.material) {
+        child.material.opacity = settings.opacity / 100;
+        child.material.transparent = true;
+        const color = new THREE.Color(settings.colorTint);
+        child.material.color.copy(color);
+      }
+    });
+  }
+
+  saveSettings();
+}
+
+function resetSettings() {
+  settings = { opacity: 100, scale: 4.0, colorTint: '#ffffff', heightOffset: 100, distanceOffset: 0, lateralOffset: 0 };
+  document.getElementById('opacity-slider').value = 100;
+  document.getElementById('scale-slider').value = 4.0;
+  document.getElementById('height-slider').value = 100;
+  document.getElementById('distance-slider').value = 0;
+  document.getElementById('lateral-slider').value = 0;
+  document.getElementById('custom-color').value = '#ffffff';
+  updateSettings();
+}
+
+function saveSettings() {
+  localStorage.setItem('seedAR_settings', JSON.stringify(settings));
+}
+
+function loadSettings() {
+  const saved = localStorage.getItem('seedAR_settings');
+  if (saved) settings = JSON.parse(saved);
+}
+
+function downloadSettings() {
+  const data = { settings, timestamp: new Date().toISOString(), location: locationMode === 'gps' ? userLocation : HARDCODED_LOCATION };
+  const json = JSON.stringify(data, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'seed-ar-settings.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function setLocationMode(mode) {
+  locationMode = mode;
+  document.getElementById('location-mode-display').textContent = mode === 'gps' ? 'GPS' : 'Test Location';
+  updateInfoBadge();
+}
+
+function updateInfoBadge(message = null, isError = false) {
+  const badge = document.getElementById('info-badge');
+  if (message) {
+    badge.textContent = message;
+    if (isError) badge.classList.add('error');
+    return;
+  }
+  badge.classList.remove('error');
+  const loc = locationMode === 'gps' ? userLocation : HARDCODED_LOCATION;
+  const locText = `${loc.lat.toFixed(4)}, ${loc.lon.toFixed(4)}`;
+  const modeText = locationMode === 'gps' ? '🌍 GPS' : '📍 Test';
+  badge.innerHTML = `<div>${modeText}</div><div style="font-size: 8px; margin-top: 4px;">${locText}</div>`;
+}
+
+document.getElementById('toggle-panel').addEventListener('click', () => {
+  const panel = document.getElementById('control-panel');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+});
+
+init();
+</script>
+
+</body>
+</html>
