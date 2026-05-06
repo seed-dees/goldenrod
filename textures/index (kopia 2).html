@@ -22,7 +22,6 @@
     height: 100dvh;
     width: 100vw;
     overflow: hidden;
-    touch-action: none;
   }
 
   #viewer-wrap {
@@ -38,7 +37,7 @@
     height: 100%;
     object-fit: cover;
     z-index: 0;
-    filter: brightness(1.1) contrast(1.15);
+    filter: brightness(1.1) contrast(1.15) sharpness(1.2);
     -webkit-filter: brightness(1.1) contrast(1.15);
   }
 
@@ -48,7 +47,11 @@
     width: 100%;
     height: 100%;
     z-index: 1;
-    touch-action: none;
+    cursor: grab;
+  }
+
+  #three-canvas.dragging {
+    cursor: grabbing;
   }
 
   #control-panel {
@@ -107,8 +110,6 @@
     transition: all 0.2s;
   }
 
-  button:hover { background: rgba(200,160,96,0.25); }
-
   .toggle-btn {
     position: absolute;
     top: 20px;
@@ -144,27 +145,23 @@
 
   #control-hint {
     position: absolute;
-    bottom: 80px;
+    bottom: 20px;
     left: 50%;
     transform: translateX(-50%);
     z-index: 5;
-    background: rgba(13,11,9,0.9);
-    border: 1px solid rgba(200,160,96,0.6);
-    color: var(--gold);
-    font-size: 11px;
-    padding: 10px 14px;
+    background: rgba(13,11,9,0.8);
+    border: 1px solid rgba(200,160,96,0.4);
+    color: var(--muted);
+    font-size: 10px;
+    padding: 8px 12px;
     border-radius: 4px;
     pointer-events: none;
-    text-align: center;
-    opacity: 1;
+    opacity: 0;
     transition: opacity 0.3s;
-    font-weight: bold;
-    letter-spacing: 0.1em;
   }
 
-  #control-hint.hide {
-    opacity: 0;
-    pointer-events: none;
+  #control-hint.show {
+    opacity: 1;
   }
 
   #loading {
@@ -201,8 +198,8 @@
 
   <button id="toggle-panel" class="toggle-btn">⚙ Settings</button>
 
-  <div id="control-hint">
-    👆 DRAG TO ROTATE • OR USE SLIDERS BELOW
+  <div id="control-hint" class="control-hint">
+    👆 Drag to rotate · 📱 Or rotate device
   </div>
 
   <div id="control-panel" style="display:none;">
@@ -211,20 +208,6 @@
       <div class="button-group">
         <button onclick="setLocationMode('gps')">Use GPS</button>
         <button onclick="setLocationMode('hardcoded')">Test Location</button>
-      </div>
-    </div>
-
-    <div class="panel-section">
-      <div class="panel-title">Camera Rotation (Manual)</div>
-      <div class="control-group">
-        <label class="control-label">Horizontal</label>
-        <input type="range" id="cam-yaw-slider" class="control-input" min="0" max="360" step="5" value="0" oninput="updateCameraManual()">
-        <span class="control-value" id="cam-yaw-value">0°</span>
-      </div>
-      <div class="control-group">
-        <label class="control-label">Vertical</label>
-        <input type="range" id="cam-pitch-slider" class="control-input" min="-90" max="90" step="5" value="-30" oninput="updateCameraManual()">
-        <span class="control-value" id="cam-pitch-value">-30°</span>
       </div>
     </div>
 
@@ -306,15 +289,17 @@
 
 <script>
 let scene, camera, renderer, model;
-let cameraRotX = 0;  // Pitch (up/down)
-let cameraRotY = 0;  // Yaw (left/right)
-let isDragging = false;
-let lastMouseX = 0;
-let lastMouseY = 0;
+let clock = new THREE.Clock();
 
 let userLocation = { lat: 0, lon: 0 };
 let locationMode = 'gps';
 const HARDCODED_LOCATION = { lat: 59.3293, lon: 18.0686 };
+
+let alpha = 0, beta = 0, gamma = 0;
+let useDeviceOrientation = false;
+let touchRotation = { x: 0, y: 0 };
+let isDragging = false;
+let lastTouchX = 0, lastTouchY = 0;
 
 let settings = {
   opacity: 100,
@@ -341,13 +326,16 @@ async function init() {
   initThree();
   await requestPermissions();
   setupControlPanel();
-  setupMouseControls();
+  setupTouchControls();
   setTimeout(() => {
     document.getElementById('loading').style.display = 'none';
-  }, 1500);
+    showHint();
+  }, 1000);
 }
 
 async function requestPermissions() {
+  const badge = document.getElementById('info-badge');
+
   if (navigator.geolocation) {
     navigator.geolocation.watchPosition(
       (pos) => {
@@ -360,101 +348,103 @@ async function requestPermissions() {
       }
     );
   }
+
+  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try {
+      const perm = await DeviceOrientationEvent.requestPermission();
+      if (perm === 'granted') {
+        useDeviceOrientation = true;
+        window.addEventListener('deviceorientation', onDeviceOrientation);
+      }
+    } catch (err) {
+      console.warn('DeviceOrientation permission denied, using touch controls');
+      window.addEventListener('deviceorientation', onDeviceOrientation);
+    }
+  } else {
+    // Fallback for non-iOS devices
+    window.addEventListener('deviceorientation', onDeviceOrientation);
+  }
+
   updateInfoBadge();
 }
 
-function setupMouseControls() {
+function onDeviceOrientation(event) {
+  if (Math.abs(event.alpha) > 0 || Math.abs(event.beta) > 0) {
+    useDeviceOrientation = true;
+  }
+  alpha = event.alpha || 0;
+  beta = event.beta || 0;
+  gamma = event.gamma || 0;
+}
+
+function setupTouchControls() {
   const canvas = document.getElementById('three-canvas');
 
-  // Mouse controls
   canvas.addEventListener('mousedown', (e) => {
     isDragging = true;
-    lastMouseX = e.clientX;
-    lastMouseY = e.clientY;
-    console.log('Mouse down');
-  }, false);
+    lastTouchX = e.clientX;
+    lastTouchY = e.clientY;
+    canvas.classList.add('dragging');
+  });
 
   canvas.addEventListener('mousemove', (e) => {
     if (isDragging) {
-      const deltaX = e.clientX - lastMouseX;
-      const deltaY = e.clientY - lastMouseY;
+      const deltaX = e.clientX - lastTouchX;
+      const deltaY = e.clientY - lastTouchY;
 
-      cameraRotY += deltaX * 0.5 * (Math.PI / 180);
-      cameraRotX += deltaY * 0.5 * (Math.PI / 180);
+      touchRotation.y += deltaX * 0.01;
+      touchRotation.x += deltaY * 0.01;
 
-      // Clamp vertical rotation
-      cameraRotX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, cameraRotX));
-
-      lastMouseX = e.clientX;
-      lastMouseY = e.clientY;
-
-      // Update sliders to reflect drag
-      updateSlidersFromCamera();
+      lastTouchX = e.clientX;
+      lastTouchY = e.clientY;
     }
-  }, false);
+  });
 
   canvas.addEventListener('mouseup', () => {
     isDragging = false;
-    console.log('Mouse up');
-  }, false);
+    canvas.classList.remove('dragging');
+  });
 
   canvas.addEventListener('mouseleave', () => {
     isDragging = false;
-  }, false);
+    canvas.classList.remove('dragging');
+  });
 
-  // Touch controls
+  // Touch events for mobile
   canvas.addEventListener('touchstart', (e) => {
     if (e.touches.length === 1) {
       isDragging = true;
-      lastMouseX = e.touches[0].clientX;
-      lastMouseY = e.touches[0].clientY;
-      console.log('Touch start');
+      lastTouchX = e.touches[0].clientX;
+      lastTouchY = e.touches[0].clientY;
+      canvas.classList.add('dragging');
     }
-  }, { passive: false });
+  });
 
   canvas.addEventListener('touchmove', (e) => {
     if (isDragging && e.touches.length === 1) {
-      e.preventDefault();
-      const deltaX = e.touches[0].clientX - lastMouseX;
-      const deltaY = e.touches[0].clientY - lastMouseY;
+      const deltaX = e.touches[0].clientX - lastTouchX;
+      const deltaY = e.touches[0].clientY - lastTouchY;
 
-      cameraRotY += deltaX * 0.5 * (Math.PI / 180);
-      cameraRotX += deltaY * 0.5 * (Math.PI / 180);
+      touchRotation.y += deltaX * 0.01;
+      touchRotation.x += deltaY * 0.01;
 
-      cameraRotX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, cameraRotX));
-
-      lastMouseX = e.touches[0].clientX;
-      lastMouseY = e.touches[0].clientY;
-
-      updateSlidersFromCamera();
+      lastTouchX = e.touches[0].clientX;
+      lastTouchY = e.touches[0].clientY;
     }
-  }, { passive: false });
+  });
 
   canvas.addEventListener('touchend', () => {
     isDragging = false;
-    console.log('Touch end');
-  }, false);
+    canvas.classList.remove('dragging');
+  });
 }
 
-function updateSlidersFromCamera() {
-  const yawDeg = (cameraRotY * 180) / Math.PI;
-  const pitchDeg = (cameraRotX * 180) / Math.PI;
-
-  document.getElementById('cam-yaw-slider').value = ((yawDeg % 360) + 360) % 360;
-  document.getElementById('cam-pitch-slider').value = Math.round(pitchDeg);
-  document.getElementById('cam-yaw-value').textContent = Math.round(((yawDeg % 360) + 360) % 360) + '°';
-  document.getElementById('cam-pitch-value').textContent = Math.round(pitchDeg) + '°';
-}
-
-function updateCameraManual() {
-  const yaw = (parseFloat(document.getElementById('cam-yaw-slider').value) * Math.PI) / 180;
-  const pitch = (parseFloat(document.getElementById('cam-pitch-slider').value) * Math.PI) / 180;
-
-  cameraRotY = yaw;
-  cameraRotX = pitch;
-
-  document.getElementById('cam-yaw-value').textContent = Math.round(parseFloat(document.getElementById('cam-yaw-slider').value)) + '°';
-  document.getElementById('cam-pitch-value').textContent = Math.round(parseFloat(document.getElementById('cam-pitch-slider').value)) + '°';
+function showHint() {
+  const hint = document.getElementById('control-hint');
+  hint.classList.add('show');
+  setTimeout(() => {
+    hint.classList.remove('show');
+  }, 3000);
 }
 
 function initThree() {
@@ -561,6 +551,8 @@ function animate() {
   requestAnimationFrame(animate);
 
   if (model) {
+    const toRad = Math.PI / 180;
+
     const heightM = parseFloat(settings.heightOffset) || 100;
     const distanceM = parseFloat(settings.distanceOffset) || 0;
     const lateralM = parseFloat(settings.lateralOffset) || 0;
@@ -570,12 +562,24 @@ function animate() {
     model.position.z = -distanceM * 0.01;
     model.position.x = lateralM * 0.01;
 
-    // Camera orbits around model based on rotation angles
-    const distance = 5;
-    camera.position.x = Math.sin(cameraRotY) * Math.cos(cameraRotX) * distance;
-    camera.position.y = Math.sin(cameraRotX) * distance;
-    camera.position.z = Math.cos(cameraRotY) * Math.cos(cameraRotX) * distance;
+    // Use device orientation if available, otherwise use touch rotation
+    let yaw, pitch;
 
+    if (useDeviceOrientation && Math.abs(alpha) > 0.1) {
+      yaw = alpha * toRad;
+      pitch = beta * toRad;
+    } else {
+      yaw = touchRotation.y;
+      pitch = touchRotation.x;
+    }
+
+    // Camera orbits around model
+    const distance = 5;
+    camera.position.x = Math.sin(yaw) * Math.cos(pitch) * distance;
+    camera.position.y = -Math.sin(pitch) * distance;
+    camera.position.z = Math.cos(yaw) * Math.cos(pitch) * distance;
+
+    // Look at the model
     camera.lookAt(model.position);
   }
 
@@ -635,6 +639,7 @@ function updateSettings() {
   document.getElementById('brightness-value').textContent = settings.brightness.toFixed(2) + 'x';
   document.getElementById('contrast-value').textContent = settings.contrast.toFixed(2) + 'x';
 
+  // Update video filters
   const video = document.getElementById('video-bg');
   video.style.filter = `brightness(${settings.brightness}) contrast(${settings.contrast})`;
 
@@ -664,9 +669,6 @@ function resetSettings() {
     brightness: 1.1,
     contrast: 1.15
   };
-  cameraRotX = -0.52;
-  cameraRotY = 0;
-
   document.getElementById('opacity-slider').value = 100;
   document.getElementById('scale-slider').value = 4.0;
   document.getElementById('height-slider').value = 100;
@@ -675,10 +677,7 @@ function resetSettings() {
   document.getElementById('brightness-slider').value = 1.1;
   document.getElementById('contrast-slider').value = 1.15;
   document.getElementById('custom-color').value = '#ffffff';
-  document.getElementById('cam-yaw-slider').value = 0;
-  document.getElementById('cam-pitch-slider').value = -30;
   updateSettings();
-  updateSlidersFromCamera();
 }
 
 function saveSettings() {
@@ -691,7 +690,7 @@ function loadSettings() {
 }
 
 function downloadSettings() {
-  const data = { settings, timestamp: new Date().toISOString(), location: locationMode === 'gps' ? userLocation : HARDCODED_LOCATION, camera: { rotX: cameraRotX, rotY: cameraRotY } };
+  const data = { settings, timestamp: new Date().toISOString(), location: locationMode === 'gps' ? userLocation : HARDCODED_LOCATION };
   const json = JSON.stringify(data, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -724,12 +723,6 @@ function updateInfoBadge(message = null, isError = false) {
 document.getElementById('toggle-panel').addEventListener('click', () => {
   const panel = document.getElementById('control-panel');
   panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-  const hint = document.getElementById('control-hint');
-  if (panel.style.display === 'none') {
-    hint.classList.remove('hide');
-  } else {
-    hint.classList.add('hide');
-  }
 });
 
 init();
